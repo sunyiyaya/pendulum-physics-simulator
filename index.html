@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>单摆物理模拟器</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: #eef1f5; color: #1f2329; padding: 16px;
+  }
+  h1 { font-size: 20px; margin-bottom: 14px; font-weight: 600; }
+  .card { background: #fff; border-radius: 10px; padding: 14px 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  #simCanvas { width: 100%; height: 440px; display: block; }
+</style>
+</head>
+<body>
+<h1>单摆物理模拟器</h1>
+<div class="card"><canvas id="simCanvas"></canvas></div>
+<script>
+// ===== 单摆物理模拟器：基础画布渲染 =====
+// 几何约定：悬挂点正下方为 θ=0，向右偏为正；
+// Canvas y 轴向下，故摆球相对悬挂点的坐标为 x = L·sinθ，y = L·cosθ。
+// 本阶段仅完成悬挂点、摆绳、小球、角度弧线标注与重力箭头的静态渲染，
+// 并随窗口缩放自适应重排（处理 devicePixelRatio 保证画面清晰）。
+
+const simCanvas = document.getElementById('simCanvas');
+const sctx = simCanvas.getContext('2d');
+
+let pivotX = 0, pivotY = 0, scale = 100;
+const DEFAULT_THETA = 30 * Math.PI / 180; // 默认展示角度 30°
+const DEFAULT_L = 1.0;                    // 默认摆长 1 m
+
+function fitCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = simCanvas.getBoundingClientRect();
+  simCanvas.width = Math.round(rect.width * dpr);
+  simCanvas.height = Math.round(rect.height * dpr);
+  sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return rect;
+}
+
+function layout() {
+  const rect = fitCanvas();
+  pivotX = rect.width / 2;
+  pivotY = 56;
+  // 像素缩放：使最大摆长 2.0 m 仍能完整落在画布内
+  scale = Math.min((rect.height - 110) / 2.0, (rect.width - 50) / 2.0);
+}
+
+function draw(theta) {
+  const rect = simCanvas.getBoundingClientRect();
+  sctx.clearRect(0, 0, rect.width, rect.height);
+
+  const Lpx = DEFAULT_L * scale;
+  const bx = pivotX + Lpx * Math.sin(theta);
+  const by = pivotY + Lpx * Math.cos(theta);
+  const r = 16; // 基础阶段小球视觉半径固定
+
+  // 重力方向箭头：悬挂点旁竖直向下，标注 g
+  const gx = pivotX + 50;
+  sctx.strokeStyle = '#e67e22'; sctx.fillStyle = '#e67e22'; sctx.lineWidth = 2;
+  sctx.beginPath(); sctx.moveTo(gx, pivotY); sctx.lineTo(gx, pivotY + 34); sctx.stroke();
+  sctx.beginPath();
+  sctx.moveTo(gx, pivotY + 40);
+  sctx.lineTo(gx - 5, pivotY + 30);
+  sctx.lineTo(gx + 5, pivotY + 30);
+  sctx.closePath(); sctx.fill();
+  sctx.font = '12px sans-serif'; sctx.textAlign = 'left'; sctx.textBaseline = 'alphabetic';
+  sctx.fillText('g', gx + 7, pivotY + 28);
+
+  // 摆角弧线：从竖直方向（θ=0，Canvas 中角度为 π/2）扫到摆绳方向（π/2 - θ）
+  const arcR = 38;
+  sctx.strokeStyle = '#999'; sctx.lineWidth = 1.2;
+  sctx.beginPath();
+  sctx.arc(pivotX, pivotY, arcR, Math.PI / 2, Math.PI / 2 - theta, theta > 0);
+  sctx.stroke();
+  // 角度数值标注
+  const midAng = Math.PI / 2 - theta / 2;
+  const lx = pivotX + (arcR + 14) * Math.cos(midAng);
+  const ly = pivotY + (arcR + 14) * Math.sin(midAng);
+  sctx.fillStyle = '#666'; sctx.font = '12px sans-serif';
+  sctx.textAlign = 'center'; sctx.textBaseline = 'middle';
+  sctx.fillText((theta * 180 / Math.PI).toFixed(1) + '°', lx, ly);
+
+  // 悬挂点铰点标记
+  sctx.strokeStyle = '#555'; sctx.lineWidth = 2;
+  sctx.beginPath(); sctx.moveTo(pivotX - 12, pivotY - 10); sctx.lineTo(pivotX + 12, pivotY - 10); sctx.stroke();
+  sctx.beginPath(); sctx.arc(pivotX, pivotY, 5, 0, Math.PI * 2);
+  sctx.fillStyle = '#333'; sctx.fill();
+
+  // 摆绳
+  sctx.strokeStyle = '#444'; sctx.lineWidth = 2;
+  sctx.beginPath(); sctx.moveTo(pivotX, pivotY); sctx.lineTo(bx, by); sctx.stroke();
+
+  // 小球
+  const grad = sctx.createRadialGradient(bx - r / 3, by - r / 3, r / 4, bx, by, r);
+  grad.addColorStop(0, '#7ab8f0');
+  grad.addColorStop(1, '#2c6fb5');
+  sctx.beginPath(); sctx.arc(bx, by, r, 0, Math.PI * 2);
+  sctx.fillStyle = grad; sctx.fill();
+  sctx.strokeStyle = '#1d4e80'; sctx.lineWidth = 1.5; sctx.stroke();
+}
+
+window.addEventListener('resize', () => { layout(); draw(DEFAULT_THETA); });
+layout();
+draw(DEFAULT_THETA);
+</script>
+</body>
+</html>
