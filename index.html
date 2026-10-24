@@ -10,26 +10,88 @@
     background: #eef1f5; color: #1f2329; padding: 16px;
   }
   h1 { font-size: 20px; margin-bottom: 14px; font-weight: 600; }
+  .layout { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+  .left { flex: 1 1 460px; min-width: 340px; }
+  .right { flex: 0 0 300px; min-width: 260px; display: flex; flex-direction: column; gap: 12px; }
   .card { background: #fff; border-radius: 10px; padding: 14px 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-  #simCanvas { width: 100%; height: 440px; display: block; }
+  .card h2 { font-size: 14px; font-weight: 600; margin-bottom: 10px; color: #333; border-left: 3px solid #4a90d9; padding-left: 8px; }
+  #simCanvas { width: 100%; height: 440px; display: block; cursor: grab; }
+  #simCanvas.dragging { cursor: grabbing; }
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; }
+  .row label { flex: 0 0 84px; color: #555; }
+  .row input[type=range] { flex: 1; }
+  .row .val { flex: 0 0 76px; text-align: right; font-variant-numeric: tabular-nums; color: #222; }
+  .preset { display: flex; gap: 6px; margin-left: 92px; margin-bottom: 10px; }
+  .preset button { flex: 1; padding: 4px 0; font-size: 12px; border: 1px solid #ccc; background: #fafafa; border-radius: 6px; cursor: pointer; }
+  .preset button:hover { background: #eef4fb; }
+  .btns { display: flex; gap: 8px; margin-top: 12px; }
+  .btns button { flex: 1; padding: 8px 0; font-size: 14px; border: none; border-radius: 8px; cursor: pointer; font-weight: 500; }
+  #playBtn { background: #4a90d9; color: #fff; }
+  #playBtn:hover { background: #3a7bc8; }
+  #resetBtn { background: #e8e8e8; color: #333; }
+  #resetBtn:hover { background: #ddd; }
 </style>
 </head>
 <body>
 <h1>单摆物理模拟器</h1>
-<div class="card"><canvas id="simCanvas"></canvas></div>
+<div class="layout">
+  <div class="left">
+    <div class="card"><canvas id="simCanvas"></canvas></div>
+  </div>
+  <div class="right">
+    <div class="card">
+      <h2>参数控制</h2>
+      <div class="row"><label>摆长 L</label><input type="range" id="L" min="0.2" max="2.0" step="0.01" value="1.0"><span class="val" id="Lv">1.00 m</span></div>
+      <div class="row"><label>质量 m</label><input type="range" id="m" min="0.05" max="2.0" step="0.01" value="1.0"><span class="val" id="mv">1.00 kg</span></div>
+      <div class="row"><label>重力 g</label><input type="range" id="g" min="1" max="25" step="0.01" value="9.81"><span class="val" id="gv">9.81 m/s²</span></div>
+      <div class="preset">
+        <button data-g="9.81">地球 9.81</button>
+        <button data-g="1.62">月球 1.62</button>
+        <button data-g="3.71">火星 3.71</button>
+      </div>
+      <div class="row"><label>阻尼 c</label><input type="range" id="c" min="0" max="0.5" step="0.001" value="0"><span class="val" id="cv">0.000</span></div>
+      <div class="row"><label>初始摆角</label><input type="range" id="theta0" min="-85" max="85" step="1" value="30"><span class="val" id="theta0v">30°</span></div>
+      <div class="btns">
+        <button id="playBtn">开始</button>
+        <button id="resetBtn">重置</button>
+      </div>
+    </div>
+  </div>
+</div>
 <script>
-// ===== 单摆物理模拟器：基础画布渲染 =====
-// 几何约定：悬挂点正下方为 θ=0，向右偏为正；
-// Canvas y 轴向下，故摆球相对悬挂点的坐标为 x = L·sinθ，y = L·cosθ。
-// 本阶段仅完成悬挂点、摆绳、小球、角度弧线标注与重力箭头的静态渲染，
-// 并随窗口缩放自适应重排（处理 devicePixelRatio 保证画面清晰）。
+// ===== 物理模型 =====
+// 非线性单摆运动方程（保留 sinθ，不做小角度线性化）：
+//   角加速度 α = d²θ/dt² = -(g/L)·sinθ - c·ω
+// 其中 ω = dθ/dt 为角速度，c 为线性阻尼系数（c·ω 项与角速度成正比，耗散机械能）。
+// 质量 m 只影响小球视觉半径与能量数值，不进入角加速度方程。
+// 数值积分：四阶 Runge-Kutta（RK4）对状态向量 y=[θ, ω] 推进；
+// 每帧按固定小步长分子步（子步长 ≤ 0.002 s），保证大角度 ±85° 下稳定不发散。
 
+let P = { L: 1.0, m: 1.0, g: 9.81, c: 0.0, theta0: 30 };
+let theta = P.theta0 * Math.PI / 180;
+let omega = 0;
+let running = false;
+let lastFrame = null;
+const DT = 0.002; // RK4 子步长上限（s）
+
+// RK4 右端函数 f(y) = [ω, -(g/L)·sinθ - c·ω]
+function deriv(th, om) {
+  return [om, -(P.g / P.L) * Math.sin(th) - P.c * om];
+}
+// 对状态向量 (θ, ω) 推进一个 RK4 步，步长 h
+function rk4(h) {
+  const [k1t, k1o] = deriv(theta, omega);
+  const [k2t, k2o] = deriv(theta + h / 2 * k1t, omega + h / 2 * k1o);
+  const [k3t, k3o] = deriv(theta + h / 2 * k2t, omega + h / 2 * k2o);
+  const [k4t, k4o] = deriv(theta + h * k3t, omega + h * k3o);
+  theta += h / 6 * (k1t + 2 * k2t + 2 * k3t + k4t);
+  omega += h / 6 * (k1o + 2 * k2o + 2 * k3o + k4o);
+}
+
+// ===== 画布与布局 =====
 const simCanvas = document.getElementById('simCanvas');
 const sctx = simCanvas.getContext('2d');
-
 let pivotX = 0, pivotY = 0, scale = 100;
-const DEFAULT_THETA = 30 * Math.PI / 180; // 默认展示角度 30°
-const DEFAULT_L = 1.0;                    // 默认摆长 1 m
 
 function fitCanvas() {
   const dpr = window.devicePixelRatio || 1;
@@ -39,25 +101,27 @@ function fitCanvas() {
   sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   return rect;
 }
-
 function layout() {
   const rect = fitCanvas();
   pivotX = rect.width / 2;
   pivotY = 56;
-  // 像素缩放：使最大摆长 2.0 m 仍能完整落在画布内
   scale = Math.min((rect.height - 110) / 2.0, (rect.width - 50) / 2.0);
 }
+// 小球视觉半径随质量按 r ∝ m^(1/3) 缩放，并钳制合理范围
+function bobRadius() {
+  let r = 9 + 13 * Math.cbrt(P.m / 2.0);
+  return Math.max(9, Math.min(24, r));
+}
 
-function draw(theta) {
+function drawSim() {
   const rect = simCanvas.getBoundingClientRect();
   sctx.clearRect(0, 0, rect.width, rect.height);
-
-  const Lpx = DEFAULT_L * scale;
+  const Lpx = P.L * scale;
   const bx = pivotX + Lpx * Math.sin(theta);
   const by = pivotY + Lpx * Math.cos(theta);
-  const r = 16; // 基础阶段小球视觉半径固定
+  const r = bobRadius();
 
-  // 重力方向箭头：悬挂点旁竖直向下，标注 g
+  // 重力方向箭头（悬挂点旁竖直向下，标注 g）
   const gx = pivotX + 50;
   sctx.strokeStyle = '#e67e22'; sctx.fillStyle = '#e67e22'; sctx.lineWidth = 2;
   sctx.beginPath(); sctx.moveTo(gx, pivotY); sctx.lineTo(gx, pivotY + 34); sctx.stroke();
@@ -69,13 +133,12 @@ function draw(theta) {
   sctx.font = '12px sans-serif'; sctx.textAlign = 'left'; sctx.textBaseline = 'alphabetic';
   sctx.fillText('g', gx + 7, pivotY + 28);
 
-  // 摆角弧线：从竖直方向（θ=0，Canvas 中角度为 π/2）扫到摆绳方向（π/2 - θ）
+  // 摆角弧线：从竖直方向（π/2）扫到摆绳方向（π/2 - θ）
   const arcR = 38;
   sctx.strokeStyle = '#999'; sctx.lineWidth = 1.2;
   sctx.beginPath();
   sctx.arc(pivotX, pivotY, arcR, Math.PI / 2, Math.PI / 2 - theta, theta > 0);
   sctx.stroke();
-  // 角度数值标注
   const midAng = Math.PI / 2 - theta / 2;
   const lx = pivotX + (arcR + 14) * Math.cos(midAng);
   const ly = pivotY + (arcR + 14) * Math.sin(midAng);
@@ -83,7 +146,7 @@ function draw(theta) {
   sctx.textAlign = 'center'; sctx.textBaseline = 'middle';
   sctx.fillText((theta * 180 / Math.PI).toFixed(1) + '°', lx, ly);
 
-  // 悬挂点铰点标记
+  // 悬挂点铰点
   sctx.strokeStyle = '#555'; sctx.lineWidth = 2;
   sctx.beginPath(); sctx.moveTo(pivotX - 12, pivotY - 10); sctx.lineTo(pivotX + 12, pivotY - 10); sctx.stroke();
   sctx.beginPath(); sctx.arc(pivotX, pivotY, 5, 0, Math.PI * 2);
@@ -102,9 +165,98 @@ function draw(theta) {
   sctx.strokeStyle = '#1d4e80'; sctx.lineWidth = 1.5; sctx.stroke();
 }
 
-window.addEventListener('resize', () => { layout(); draw(DEFAULT_THETA); });
+// ===== 参数滑块绑定 =====
+function bindSlider(id, key, fmt, valId, onInput) {
+  const el = document.getElementById(id);
+  const out = document.getElementById(valId);
+  el.addEventListener('input', () => {
+    P[key] = parseFloat(el.value);
+    out.textContent = fmt(P[key]);
+    if (onInput) onInput();
+  });
+}
+bindSlider('L', 'L', v => v.toFixed(2) + ' m', 'Lv');
+bindSlider('m', 'm', v => v.toFixed(2) + ' kg', 'mv');
+bindSlider('g', 'g', v => v.toFixed(2) + ' m/s²', 'gv');
+bindSlider('c', 'c', v => v.toFixed(3), 'cv');
+// 初始摆角：暂停时直接更新摆球；运行中修改需在「重置」后生效
+bindSlider('theta0', 'theta0', v => v.toFixed(0) + '°', 'theta0v', () => {
+  if (!running) { theta = P.theta0 * Math.PI / 180; omega = 0; }
+});
+
+document.querySelectorAll('.preset button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const g = parseFloat(btn.dataset.g);
+    P.g = g;
+    document.getElementById('g').value = g;
+    document.getElementById('gv').textContent = g.toFixed(2) + ' m/s²';
+  });
+});
+
+// ===== 开始 / 暂停 / 重置 =====
+const playBtn = document.getElementById('playBtn');
+playBtn.addEventListener('click', () => {
+  running = !running;
+  playBtn.textContent = running ? '暂停' : '开始';
+  lastFrame = null;
+});
+document.getElementById('resetBtn').addEventListener('click', () => {
+  running = false; playBtn.textContent = '开始';
+  theta = P.theta0 * Math.PI / 180; omega = 0;
+  lastFrame = null;
+});
+
+// ===== 拖拽调角 =====
+let dragging = false;
+function eventAngle(e) {
+  const rect = simCanvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left;
+  const cy = e.clientY - rect.top;
+  // 坐标反算：鼠标向量相对悬挂点，dx = L·sinθ, dy = L·cosθ → θ = atan2(dx, dy)
+  let th = Math.atan2(cx - pivotX, cy - pivotY);
+  const lim = 85 * Math.PI / 180;
+  return Math.max(-lim, Math.min(lim, th));
+}
+simCanvas.addEventListener('mousedown', e => {
+  const rect = simCanvas.getBoundingClientRect();
+  const bx = pivotX + P.L * scale * Math.sin(theta);
+  const by = pivotY + P.L * scale * Math.cos(theta);
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  if (Math.hypot(mx - bx, my - by) < bobRadius() + 12) {
+    dragging = true;
+    simCanvas.classList.add('dragging');
+    omega = 0; // 拖拽开始令 ω=0
+    theta = eventAngle(e);
+  }
+});
+window.addEventListener('mousemove', e => {
+  if (dragging) theta = eventAngle(e);
+});
+window.addEventListener('mouseup', () => {
+  if (dragging) { dragging = false; simCanvas.classList.remove('dragging'); }
+});
+
+// ===== 主循环 =====
+function frame(ts) {
+  if (running) {
+    if (lastFrame == null) lastFrame = ts;
+    let dt = (ts - lastFrame) / 1000;
+    lastFrame = ts;
+    dt = Math.min(dt, 0.05); // 防止后台切回导致大步长
+    let n = Math.max(1, Math.ceil(dt / DT));
+    const h = dt / n;
+    for (let i = 0; i < n; i++) rk4(h);
+  } else {
+    lastFrame = null;
+  }
+  drawSim();
+  requestAnimationFrame(frame);
+}
+
+window.addEventListener('resize', () => { layout(); });
 layout();
-draw(DEFAULT_THETA);
+theta = P.theta0 * Math.PI / 180;
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>
