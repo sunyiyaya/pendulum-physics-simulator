@@ -30,6 +30,16 @@
   #playBtn:hover { background: #3a7bc8; }
   #resetBtn { background: #e8e8e8; color: #333; }
   #resetBtn:hover { background: #ddd; }
+  .datarow { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; border-bottom: 1px dashed #eee; }
+  .datarow:last-child { border-bottom: none; }
+  .datarow .k { color: #666; }
+  .datarow .v { font-variant-numeric: tabular-nums; font-weight: 500; }
+  .charts { display: flex; gap: 16px; margin-top: 16px; flex-wrap: wrap; }
+  .chart-card { flex: 1 1 380px; min-width: 300px; }
+  .chart-card canvas { width: 100%; height: 220px; display: block; }
+  .legend { display: flex; gap: 14px; font-size: 12px; margin-top: 6px; padding-left: 4px; color: #555; }
+  .legend span { display: inline-flex; align-items: center; gap: 4px; }
+  .legend i { display: inline-block; width: 14px; height: 3px; }
 </style>
 </head>
 <body>
@@ -37,6 +47,21 @@
 <div class="layout">
   <div class="left">
     <div class="card"><canvas id="simCanvas"></canvas></div>
+    <div class="charts">
+      <div class="card chart-card">
+        <h2>角度-时间曲线</h2>
+        <canvas id="angleChart"></canvas>
+      </div>
+      <div class="card chart-card">
+        <h2>能量-时间曲线</h2>
+        <canvas id="energyChart"></canvas>
+        <div class="legend">
+          <span><i style="background:#e74c3c"></i>Ek 动能</span>
+          <span><i style="background:#3498db"></i>Ep 势能</span>
+          <span><i style="background:#222"></i>E 机械能</span>
+        </div>
+      </div>
+    </div>
   </div>
   <div class="right">
     <div class="card">
@@ -56,6 +81,16 @@
         <button id="resetBtn">重置</button>
       </div>
     </div>
+    <div class="card">
+      <h2>实时数据</h2>
+      <div class="datarow"><span class="k">角度 θ</span><span class="v" id="dTheta">0.00°</span></div>
+      <div class="datarow"><span class="k">角速度 ω</span><span class="v" id="dOmega">0.000 rad/s</span></div>
+      <div class="datarow"><span class="k">实测周期 T</span><span class="v" id="dT">—</span></div>
+      <div class="datarow"><span class="k">理论周期 T₀</span><span class="v" id="dT0">—</span></div>
+      <div class="datarow"><span class="k">动能 Ek</span><span class="v" id="dEk">0.000 J</span></div>
+      <div class="datarow"><span class="k">势能 Ep</span><span class="v" id="dEp">0.000 J</span></div>
+      <div class="datarow"><span class="k">机械能 E</span><span class="v" id="dE">0.000 J</span></div>
+    </div>
   </div>
 </div>
 <script>
@@ -64,6 +99,9 @@
 //   角加速度 α = d²θ/dt² = -(g/L)·sinθ - c·ω
 // 其中 ω = dθ/dt 为角速度，c 为线性阻尼系数（c·ω 项与角速度成正比，耗散机械能）。
 // 质量 m 只影响小球视觉半径与能量数值，不进入角加速度方程。
+// 动能：Ek = ½·m·v² = ½·m·(L·ω)² = ½·m·L²·ω²
+// 势能（以最低点 θ=0 为势能零点）：Ep = m·g·L·(1 - cosθ)
+// 小角度理论周期：T₀ = 2π·√(L/g)
 // 数值积分：四阶 Runge-Kutta（RK4）对状态向量 y=[θ, ω] 推进；
 // 每帧按固定小步长分子步（子步长 ≤ 0.002 s），保证大角度 ±85° 下稳定不发散。
 
@@ -71,8 +109,10 @@ let P = { L: 1.0, m: 1.0, g: 9.81, c: 0.0, theta0: 30 };
 let theta = P.theta0 * Math.PI / 180;
 let omega = 0;
 let running = false;
+let simTime = 0;       // 仿真累计时间（s），重置清零
 let lastFrame = null;
-const DT = 0.002; // RK4 子步长上限（s）
+const DT = 0.002;      // RK4 子步长上限（s）
+const HIST = 20;       // 图表历史窗口（s）
 
 // RK4 右端函数 f(y) = [ω, -(g/L)·sinθ - c·ω]
 function deriv(th, om) {
@@ -91,18 +131,23 @@ function rk4(h) {
 // ===== 画布与布局 =====
 const simCanvas = document.getElementById('simCanvas');
 const sctx = simCanvas.getContext('2d');
+const angleChart = document.getElementById('angleChart');
+const energyChart = document.getElementById('energyChart');
+const actx = angleChart.getContext('2d');
+const ectx = energyChart.getContext('2d');
 let pivotX = 0, pivotY = 0, scale = 100;
 
-function fitCanvas() {
+function fitCanvas(c) {
   const dpr = window.devicePixelRatio || 1;
-  const rect = simCanvas.getBoundingClientRect();
-  simCanvas.width = Math.round(rect.width * dpr);
-  simCanvas.height = Math.round(rect.height * dpr);
-  sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const rect = c.getBoundingClientRect();
+  c.width = Math.round(rect.width * dpr);
+  c.height = Math.round(rect.height * dpr);
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   return rect;
 }
 function layout() {
-  const rect = fitCanvas();
+  const rect = fitCanvas(simCanvas);
   pivotX = rect.width / 2;
   pivotY = 56;
   scale = Math.min((rect.height - 110) / 2.0, (rect.width - 50) / 2.0);
@@ -165,6 +210,131 @@ function drawSim() {
   sctx.strokeStyle = '#1d4e80'; sctx.lineWidth = 1.5; sctx.stroke();
 }
 
+// ===== 历史记录与峰值检测 =====
+let angleHist = [];   // {t, deg}
+let energyHist = [];  // {t, ek, ep, e}
+let peaks = [];       // 正向极大值（θ 峰值）发生时刻
+let prevOmega = 0;
+
+function recordFrame() {
+  const deg = theta * 180 / Math.PI;
+  const ek = 0.5 * P.m * P.L * P.L * omega * omega;
+  const ep = P.m * P.g * P.L * (1 - Math.cos(theta));
+  angleHist.push({ t: simTime, deg });
+  energyHist.push({ t: simTime, ek, ep, e: ek + ep });
+  while (angleHist.length && simTime - angleHist[0].t > HIST) angleHist.shift();
+  while (energyHist.length && simTime - energyHist[0].t > HIST) energyHist.shift();
+  // 正向峰值检测：ω 由正变负（θ 到达正向极大值）
+  if (prevOmega > 0 && omega <= 0) peaks.push(simTime);
+  if (peaks.length > 10) peaks.shift();
+  prevOmega = omega;
+}
+
+function clearHistory() {
+  angleHist = []; energyHist = []; peaks = []; prevOmega = 0;
+}
+
+// ===== 图表绘制（Canvas 自绘，无图表库）=====
+function drawChartBase(ctx, w, h, yLabel, yMin, yMax) {
+  ctx.clearRect(0, 0, w, h);
+  const padL = 38, padR = 12, padT = 12, padB = 22;
+  const pw = w - padL - padR, ph = h - padT - padB;
+  // 垂直网格（时间轴，单位 s）
+  ctx.strokeStyle = '#eee'; ctx.lineWidth = 1;
+  ctx.fillStyle = '#888'; ctx.font = '11px sans-serif';
+  for (let i = 0; i <= HIST; i += 4) {
+    const x = padL + pw * i / HIST;
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + ph); ctx.stroke();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText(String(-HIST + i), x, padT + ph + 14);
+  }
+  // 水平网格
+  const yTicks = 4;
+  for (let i = 0; i <= yTicks; i++) {
+    const y = padT + ph * i / yTicks;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + pw, y); ctx.stroke();
+    const v = yMax - (yMax - yMin) * i / yTicks;
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    ctx.fillText(v.toFixed(1), padL - 4, y);
+  }
+  // 轴标签
+  ctx.fillStyle = '#666'; ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('t/s', padL + pw, h - 6);
+  ctx.save();
+  ctx.translate(13, padT + ph / 2); ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(yLabel, 0, 0);
+  ctx.restore();
+  return { padL, padR, padT, padB, pw, ph };
+}
+
+function drawAngleChart() {
+  const rect = fitCanvas(angleChart);
+  const w = rect.width, h = rect.height;
+  const yMin = -90, yMax = 90;
+  const m = drawChartBase(actx, w, h, 'θ/°', yMin, yMax);
+  // 0° 水平线高亮
+  const y0 = m.padT + m.ph * (yMax - 0) / (yMax - yMin);
+  actx.strokeStyle = '#bbb'; actx.setLineDash([4, 3]); actx.lineWidth = 1;
+  actx.beginPath(); actx.moveTo(m.padL, y0); actx.lineTo(m.padL + m.pw, y0); actx.stroke();
+  actx.setLineDash([]);
+  // 角度曲线
+  actx.strokeStyle = '#4a90d9'; actx.lineWidth = 1.8; actx.beginPath();
+  for (let i = 0; i < angleHist.length; i++) {
+    const p = angleHist[i];
+    const x = m.padL + m.pw * (simTime - p.t) / HIST;
+    const y = m.padT + m.ph * (yMax - p.deg) / (yMax - yMin);
+    if (i === 0) actx.moveTo(x, y); else actx.lineTo(x, y);
+  }
+  actx.stroke();
+}
+
+function drawEnergyChart() {
+  const rect = fitCanvas(energyChart);
+  const w = rect.width, h = rect.height;
+  // 动态纵轴范围：取历史中能量最大值
+  let yMax = 0.01;
+  for (const p of energyHist) yMax = Math.max(yMax, p.ek, p.ep, p.e);
+  const yMin = 0;
+  const m = drawChartBase(ectx, w, h, 'E/J', yMin, yMax);
+  const series = [
+    { color: '#e74c3c', key: 'ek' },  // 动能 Ek 红
+    { color: '#3498db', key: 'ep' },  // 势能 Ep 蓝
+    { color: '#222', key: 'e' },     // 机械能 E 黑
+  ];
+  for (const s of series) {
+    ectx.strokeStyle = s.color; ectx.lineWidth = 1.6; ectx.beginPath();
+    for (let i = 0; i < energyHist.length; i++) {
+      const p = energyHist[i];
+      const x = m.padL + m.pw * (simTime - p.t) / HIST;
+      const y = m.padT + m.ph * (yMax - p[s.key]) / (yMax - yMin);
+      if (i === 0) ectx.moveTo(x, y); else ectx.lineTo(x, y);
+    }
+    ectx.stroke();
+  }
+}
+
+// ===== 实时数据面板 =====
+function updatePanel() {
+  const deg = theta * 180 / Math.PI;
+  document.getElementById('dTheta').textContent = deg.toFixed(2) + '°';
+  document.getElementById('dOmega').textContent = omega.toFixed(3) + ' rad/s';
+  // 实测周期 T：相邻两个正向峰值的时间差；样本不足两个峰显示「—」
+  document.getElementById('dT').textContent =
+    peaks.length >= 2
+      ? (peaks[peaks.length - 1] - peaks[peaks.length - 2]).toFixed(3) + ' s'
+      : '—';
+  // 小角度理论周期 T₀ = 2π√(L/g)，仅在 c=0 时作对照显示
+  const T0 = 2 * Math.PI * Math.sqrt(P.L / P.g);
+  document.getElementById('dT0').textContent = (P.c === 0) ? T0.toFixed(3) + ' s' : '—';
+  const ek = 0.5 * P.m * P.L * P.L * omega * omega;
+  const ep = P.m * P.g * P.L * (1 - Math.cos(theta));
+  document.getElementById('dEk').textContent = ek.toFixed(3) + ' J';
+  document.getElementById('dEp').textContent = ep.toFixed(3) + ' J';
+  document.getElementById('dE').textContent = (ek + ep).toFixed(3) + ' J';
+}
+
 // ===== 参数滑块绑定 =====
 function bindSlider(id, key, fmt, valId, onInput) {
   const el = document.getElementById(id);
@@ -203,7 +373,8 @@ playBtn.addEventListener('click', () => {
 document.getElementById('resetBtn').addEventListener('click', () => {
   running = false; playBtn.textContent = '开始';
   theta = P.theta0 * Math.PI / 180; omega = 0;
-  lastFrame = null;
+  simTime = 0; lastFrame = null;
+  clearHistory(); // 重置时清空曲线历史与摆峰记录
 });
 
 // ===== 拖拽调角 =====
@@ -230,7 +401,7 @@ simCanvas.addEventListener('mousedown', e => {
   }
 });
 window.addEventListener('mousemove', e => {
-  if (dragging) theta = eventAngle(e);
+  if (dragging) theta = eventAngle(e); // 拖动过程中实时更新 θ，平滑接管
 });
 window.addEventListener('mouseup', () => {
   if (dragging) { dragging = false; simCanvas.classList.remove('dragging'); }
@@ -246,10 +417,15 @@ function frame(ts) {
     let n = Math.max(1, Math.ceil(dt / DT));
     const h = dt / n;
     for (let i = 0; i < n; i++) rk4(h);
+    simTime += dt;
+    recordFrame();
   } else {
     lastFrame = null;
   }
   drawSim();
+  drawAngleChart();
+  drawEnergyChart();
+  updatePanel();
   requestAnimationFrame(frame);
 }
 
