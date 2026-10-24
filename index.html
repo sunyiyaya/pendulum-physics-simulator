@@ -237,7 +237,7 @@ function clearHistory() {
 // ===== 图表绘制（Canvas 自绘，无图表库）=====
 function drawChartBase(ctx, w, h, yLabel, yMin, yMax) {
   ctx.clearRect(0, 0, w, h);
-  const padL = 38, padR = 12, padT = 12, padB = 22;
+  const padL = 56, padR = 12, padT = 12, padB = 22;
   const pw = w - padL - padR, ph = h - padT - padB;
   // 垂直网格（时间轴，单位 s）
   ctx.strokeStyle = '#eee'; ctx.lineWidth = 1;
@@ -250,19 +250,27 @@ function drawChartBase(ctx, w, h, yLabel, yMin, yMax) {
   }
   // 水平网格
   const yTicks = 4;
+  // 纵轴刻度小数位随量程自适应：小能量场景（E≈0.0x J）避免全部刻度显示 0.0
+  // 角度图 yMax=90 落入 ≥10 分支保持 1 位；能量图 yMax 动态自适应
+  let decimals = 2;
+  if (yMax >= 100) decimals = 0;
+  else if (yMax >= 10) decimals = 1;
+  else if (yMax >= 1) decimals = 2;
+  else if (yMax >= 0.1) decimals = 3;
+  else decimals = 4;
   for (let i = 0; i <= yTicks; i++) {
     const y = padT + ph * i / yTicks;
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + pw, y); ctx.stroke();
     const v = yMax - (yMax - yMin) * i / yTicks;
     ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-    ctx.fillText(v.toFixed(1), padL - 4, y);
+    ctx.fillText(v.toFixed(decimals), padL - 4, y);
   }
   // 轴标签
   ctx.fillStyle = '#666'; ctx.font = '11px sans-serif';
   ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic';
   ctx.fillText('t/s', padL + pw, h - 6);
   ctx.save();
-  ctx.translate(13, padT + ph / 2); ctx.rotate(-Math.PI / 2);
+  ctx.translate(18, padT + ph / 2); ctx.rotate(-Math.PI / 2);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(yLabel, 0, 0);
   ctx.restore();
@@ -283,7 +291,7 @@ function drawAngleChart() {
   actx.strokeStyle = '#4a90d9'; actx.lineWidth = 1.8; actx.beginPath();
   for (let i = 0; i < angleHist.length; i++) {
     const p = angleHist[i];
-    const x = m.padL + m.pw * (simTime - p.t) / HIST;
+    const x = m.padL + m.pw * (1 - (simTime - p.t) / HIST);
     const y = m.padT + m.ph * (yMax - p.deg) / (yMax - yMin);
     if (i === 0) actx.moveTo(x, y); else actx.lineTo(x, y);
   }
@@ -307,7 +315,7 @@ function drawEnergyChart() {
     ectx.strokeStyle = s.color; ectx.lineWidth = 1.6; ectx.beginPath();
     for (let i = 0; i < energyHist.length; i++) {
       const p = energyHist[i];
-      const x = m.padL + m.pw * (simTime - p.t) / HIST;
+      const x = m.padL + m.pw * (1 - (simTime - p.t) / HIST);
       const y = m.padT + m.ph * (yMax - p[s.key]) / (yMax - yMin);
       if (i === 0) ectx.moveTo(x, y); else ectx.lineTo(x, y);
     }
